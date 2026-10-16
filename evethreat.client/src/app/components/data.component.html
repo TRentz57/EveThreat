@@ -1,0 +1,67 @@
+<ng-container *ngIf="intelResult">
+<div class="intel-container">
+
+  <!-- Active Corp -->
+  <h2>Active Corporation</h2>
+  <div class="intel-value">{{ intelResult.activeCorp }}</div>
+
+  <!-- Active Pilots -->
+  <h2>Active Pilots</h2>
+  <ul>
+    <li *ngFor="let pilot of intelResult.activePilots">
+      {{ pilot }}
+    </li>
+  </ul>
+
+  <!-- Active Time -->
+  <h2>Active Time Window</h2>
+  <div class="intel-value">{{ intelResult.activeTime }}</div>
+
+  <h2>Corp Kills over 2 months</h2>
+  <div class="intel-value">{{ intelResult.kills.length }}</div>
+
+  <!-- Popular Ships -->
+  <h2>Popular Ships</h2>
+  <ul>
+    <li *ngFor="let ship of intelResult.popularShips">
+      {{ ship }}
+    </li>
+  </ul>
+
+  <!-- Kill List -->
+  <h2>Recent Kills</h2>
+  <div *ngFor="let kill of intelResult.kills" class="kill-card">
+
+    <div class="kill-header">
+      <strong>Killmail:</strong> {{ kill.killmailId }}  
+      <span>({{ kill.killmailTime | date:'short' }})</span>
+      <div><strong>System:</strong> {{ kill.systemName }}</div>
+    </div>
+
+    <!-- Defender -->
+    <div class="kill-section">
+      <h3>Defender</h3>
+      <div><strong>Pilot:</strong> {{ kill.defender.characterName }}</div>
+      <div><strong>Corp:</strong> {{ kill.defender.corpName }}</div>
+      <div><strong>Alliance:</strong> {{ kill.defender.allianceName }}</div>
+      <div><strong>Ship:</strong> {{ kill.defender.shipName }}</div>
+    </div>
+
+    <!-- Attackers -->
+    <div class="kill-section">
+      <h3>Attackers</h3>
+      <ul>
+        <li *ngFor="let atk of kill.attacker">
+          <div><strong>Pilot:</strong> {{ atk.characterName }}</div>
+          <div><strong>Corp:</strong> {{ atk.corpName }}</div>
+          <div><strong>Alliance:</strong> {{ atk.allianceName }}</div>
+          <div><strong>Ship:</strong> {{ atk.shipName }}</div>
+          <hr />
+        </li>
+      </ul>
+    </div>
+
+  </div>
+
+</div>
+</ng-container>

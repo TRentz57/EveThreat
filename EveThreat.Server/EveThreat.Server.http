@@ -1,0 +1,6 @@
+@EveThreat.Server_HostAddress = http://localhost:5018
+
+GET {{EveThreat.Server_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
