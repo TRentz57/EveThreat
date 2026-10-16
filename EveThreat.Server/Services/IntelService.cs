@@ -13,21 +13,25 @@ namespace EveThreat.Server.Services
         private readonly HttpClient _http;
         private readonly ZKillCache _cache;
         private readonly TimeSpan _cacheDuration = TimeSpan.FromMinutes(30);
+        private readonly Dictionary<long, string> _characterCache = new();
+        private readonly Dictionary<long, string> _corpCache = new();
+        private readonly Dictionary<long, string> _allianceCache = new();
+        private readonly Dictionary<long, string> _shipCache = new();
 
         public IntelService(IEveAuthService auth, HttpClient http, ZKillCache zKillCache)
         {
             _auth = auth;
             _http = http;
             _cache = zKillCache;
-            
+
         }
         public async Task<IntelResult> GetIntelAsync()
         {
             var loc = await GetLocationAsync();
             if (loc.SolarSystemId != _cache.Location)
             {
-               var zkilldata =  await GetZkillData(loc);
-               var intelResult = await AggregateData(zkilldata);
+                var zkilldata = await GetZkillData(loc);
+                var intelResult = await AggregateData(zkilldata);
                 _cache.IntelResult = intelResult;
                 return intelResult;
             }
@@ -42,29 +46,39 @@ namespace EveThreat.Server.Services
 
             var result = new IntelResult
             {
-                Kills = kills,
+                Kills = activeCorp.CorpKills,
                 ActiveCorp = activeCorp.CorpName,
                 ActivePilots = activePilots.PilotNames,
                 ActiveTime = await GetActiveTime(activeCorp),
                 PopularShips = await GetShips(activeCorp),
+                AllianceName = activeCorp.AllianceName,
+                AlliedCorps = activeCorp.AlliedCorps
             };
-            var t= result;
+            var t = result;
             return t;
         }
 
         public async Task<ActiveCorp> GetActiveCorp(List<ZKillTranslatedTop> kills)
         {
+            // NEW: NPC activity still counts,
+            // but at reduced weight.
+            const double npcWeightMultiplier = 0.25;
+
             var corpKillCount = new Dictionary<string, int>();
             var corpDeathCount = new Dictionary<string, int>();
             var corpDates = new Dictionary<string, HashSet<DateTime>>();
             var corpKills = new Dictionary<string, List<ZKillTranslatedTop>>();
 
+            // Track alliance membership
+            var corpAllianceMap = new Dictionary<string, string>();
+
             foreach (var k in kills)
             {
                 var date = k.KillmailTime.Date;
 
-                // Defender = DEATH (presence)
+                // Defender = death / presence
                 var defCorp = k.Defender.CorpName ?? "npc";
+                var defAlliance = k.Defender.AllianceName ?? "No Alliance";
 
                 if (!corpDeathCount.ContainsKey(defCorp))
                     corpDeathCount[defCorp] = 0;
@@ -81,10 +95,14 @@ namespace EveThreat.Server.Services
 
                 corpKills[defCorp].Add(k);
 
-                // Attackers = KILL (activity)
+                if (!corpAllianceMap.ContainsKey(defCorp))
+                    corpAllianceMap[defCorp] = defAlliance;
+
+                // Attackers = kill activity
                 foreach (var atk in k.Attacker)
                 {
                     var atkCorp = atk.CorpName ?? "npc";
+                    var atkAlliance = atk.AllianceName ?? "No Alliance";
 
                     if (!corpKillCount.ContainsKey(atkCorp))
                         corpKillCount[atkCorp] = 0;
@@ -100,23 +118,32 @@ namespace EveThreat.Server.Services
                         corpKills[atkCorp] = new List<ZKillTranslatedTop>();
 
                     corpKills[atkCorp].Add(k);
+
+                    if (!corpAllianceMap.ContainsKey(atkCorp))
+                        corpAllianceMap[atkCorp] = atkAlliance;
                 }
             }
 
-            // Compute consistency-first scores
             var corpScores = new Dictionary<string, double>();
 
             foreach (var corp in corpDates.Keys)
             {
-                int killsTotal = corpKillCount.ContainsKey(corp) ? corpKillCount[corp] : 0;
-                int deathsTotal = corpDeathCount.ContainsKey(corp) ? corpDeathCount[corp] : 0;
+                int killsTotal = corpKillCount.ContainsKey(corp)
+                    ? corpKillCount[corp]
+                    : 0;
+
+                int deathsTotal = corpDeathCount.ContainsKey(corp)
+                    ? corpDeathCount[corp]
+                    : 0;
+
                 int activeDays = corpDates[corp].Count;
 
                 int weeksActive = corpDates[corp]
-                    .Select(d => System.Globalization.CultureInfo.InvariantCulture.Calendar.GetWeekOfYear(
-                        d,
-                        System.Globalization.CalendarWeekRule.FirstDay,
-                        DayOfWeek.Monday))
+                    .Select(d =>
+                        System.Globalization.CultureInfo.InvariantCulture.Calendar.GetWeekOfYear(
+                            d,
+                            System.Globalization.CalendarWeekRule.FirstDay,
+                            DayOfWeek.Monday))
                     .Distinct()
                     .Count();
 
@@ -126,32 +153,96 @@ namespace EveThreat.Server.Services
                     (deathsTotal * 2) +
                     (killsTotal * 1);
 
+                // NEW: NPC activity counts,
+                // but much lower than player corps.
+                if (corp.Equals("npc", StringComparison.OrdinalIgnoreCase))
+                {
+                    score *= npcWeightMultiplier;
+                }
+
                 corpScores[corp] = score;
             }
 
-            // Pick top corp
-            var topCorp = corpScores.OrderByDescending(x => x.Value).First();
+            // DEBUG: Uncomment while tuning algorithm
+
+            foreach (var corp in corpScores
+                .OrderByDescending(x => x.Value)
+                .Take(10))
+            {
+                Console.WriteLine(
+                    $"{corp.Key} | Score:{corp.Value}");
+            }
+
+
+            var topCorp = corpScores
+                .OrderByDescending(x => x.Value)
+                .First();
+
             var corpName = topCorp.Key;
             var scoreValue = topCorp.Value;
 
-            // Likelihood tier
             string likelihood =
                 scoreValue >= 200 ? "High likelihood" :
                 scoreValue >= 100 ? "Medium likelihood" :
                 "Low likelihood";
 
-            // Unique kills for this corp
+            // Determine winning alliance
+            corpAllianceMap.TryGetValue(corpName, out var winningAlliance);
+
             var uniqueKills = corpKills[corpName]
                 .GroupBy(k => k.KillmailId)
                 .Select(g => g.First())
                 .ToList();
 
+            var alliedCorps = new List<string>();
+
+            // If corp belongs to an alliance,
+            // include alliance member activity.
+            if (!string.IsNullOrWhiteSpace(winningAlliance) &&
+                winningAlliance != "No Alliance")
+            {
+                alliedCorps = corpAllianceMap
+                    .Where(x =>
+                        x.Value == winningAlliance &&
+                        x.Key != corpName)
+                    .Select(x => x.Key)
+                    .Distinct()
+                    .ToList();
+
+                foreach (var alliedCorp in alliedCorps)
+                {
+                    if (!corpKills.ContainsKey(alliedCorp))
+                        continue;
+
+                    uniqueKills.AddRange(corpKills[alliedCorp]);
+                }
+
+                uniqueKills = uniqueKills
+                    .GroupBy(k => k.KillmailId)
+                    .Select(g => g.First())
+                    .ToList();
+            }
+
+
             return new ActiveCorp
             {
                 CorpName = $"{corpName} ({likelihood})",
+
+                // If no alliance exists, return null
+                AllianceName =
+                    string.IsNullOrWhiteSpace(winningAlliance) ||
+                    winningAlliance == "No Alliance"
+                        ? null
+                        : winningAlliance,
+
+                AlliedCorps = alliedCorps,
+
                 CorpKills = uniqueKills
             };
         }
+
+
+
 
 
 
@@ -263,7 +354,8 @@ namespace EveThreat.Server.Services
                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
 
             _cache.Location = loc.SolarSystemId;
-            return await TranslateAllAsync(kills.Where(x => x.Killmail_Time >= DateTime.UtcNow.AddMonths(-2))
+            var t = kills.Where(x => x.Killmail_Time >= DateTime.UtcNow.AddMonths(-2));
+            return await TranslateAllAsync(kills.Where(x => x.Killmail_Time >= DateTime.UtcNow.AddMonths(-4))
                 .ToList());
             
             
@@ -350,59 +442,105 @@ namespace EveThreat.Server.Services
 
         private async Task<string?> TranslateCharacterAsync(long? id)
         {
-            if (id == null) return null;
+            if (id == null)
+                return null;
+
+            if (_cache.CharacterCache.TryGetValue(id.Value, out var cached))
+                return cached;
 
             var url = $"https://esi.evetech.net/latest/characters/{id}/";
+
             var response = await _http.GetAsync(url);
 
             if (!response.IsSuccessStatusCode)
                 return "Unknown";
 
             var json = await response.Content.ReadAsStringAsync();
-            var data = JsonSerializer.Deserialize<CharacterResponse>(json,
-                new JsonSerializerOptions { PropertyNameCaseInsensitive = true }
-);
 
-            return data?.Name ?? "Unknown";
+            var data = JsonSerializer.Deserialize<CharacterResponse>(
+                json,
+                new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                });
+
+            var name = data?.Name ?? "Unknown";
+
+            _cache.CharacterCache.TryAdd(id.Value, name);
+
+            return name;
         }
         private async Task<string?> TranslateCorpAsync(long? id)
         {
-            if (id == null) return null;
+            if (id == null)
+                return null;
+
+            if (_cache.CorpCache.TryGetValue(id.Value, out var cached))
+                return cached;
 
             var json = await _http.GetStringAsync(
-                $"https://esi.evetech.net/latest/corporations/{id}/"
-            );
+                $"https://esi.evetech.net/latest/corporations/{id}/");
 
-            var data = JsonSerializer.Deserialize<CharacterResponse>(json,
-                 new JsonSerializerOptions { PropertyNameCaseInsensitive = true }
- );
-            return data?.Name ?? "Unknown";
+            var data = JsonSerializer.Deserialize<CharacterResponse>(
+                json,
+                new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                });
+
+            var name = data?.Name ?? "Unknown";
+
+            _cache.CorpCache.TryAdd(id.Value, name);
+
+            return name;
         }
         private async Task<string?> TranslateAllianceAsync(long? id)
         {
-            if (id == null) return null;
+            if (id == null)
+                return null;
+
+            if (_cache.AllianceCache.TryGetValue(id.Value, out var cached))
+                return cached;
 
             var json = await _http.GetStringAsync(
-                $"https://esi.evetech.net/latest/alliances/{id}/"
-            );
+                $"https://esi.evetech.net/latest/alliances/{id}/");
 
-            var data = JsonSerializer.Deserialize<CharacterResponse>(json,
-                new JsonSerializerOptions { PropertyNameCaseInsensitive = true }
-);
-            return data?.Name ?? "Unknown";
+            var data = JsonSerializer.Deserialize<CharacterResponse>(
+                json,
+                new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                });
+
+            var name = data?.Name ?? "Unknown";
+
+            _cache.AllianceCache.TryAdd(id.Value, name);
+
+            return name;
         }
         private async Task<string> TranslateShipAsync(long? typeId)
         {
-            if (typeId == null) return null;
-            var json = await _http.GetStringAsync(
-                $"https://esi.evetech.net/latest/universe/types/{typeId}/"
-            );
-           
-            var data = JsonSerializer.Deserialize<CharacterResponse>(json,
-                new JsonSerializerOptions { PropertyNameCaseInsensitive = true }
-                );
-                return data?.Name ?? "Unknown Ship";
+            if (typeId == null)
+                return null;
 
+            if (_cache.ShipCache.TryGetValue(typeId.Value, out var cached))
+                return cached;
+
+            var json = await _http.GetStringAsync(
+                $"https://esi.evetech.net/latest/universe/types/{typeId}/");
+
+            var data = JsonSerializer.Deserialize<CharacterResponse>(
+                json,
+                new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                });
+
+            var name = data?.Name ?? "Unknown Ship";
+
+            _cache.ShipCache.TryAdd(typeId.Value, name);
+
+            return name;
         }
         private async Task<string> TranslateSystemAsync(long systemId)
         {

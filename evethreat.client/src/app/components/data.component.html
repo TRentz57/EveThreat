@@ -4,6 +4,15 @@
   <!-- Active Corp -->
   <h2>Active Corporation</h2>
   <div class="intel-value">{{ intelResult.activeCorp }}</div>
+  <h2>Corporation Alliance</h2>
+  <div class="intel-value">{{ intelResult.allianceName }}</div>
+  <h2>Active Alliance Members</h2>
+  <ul>
+    <li *ngFor="let pilot of intelResult.alliedCorps">
+      {{ pilot }}
+    </li>
+  </ul>
+
 
   <!-- Active Pilots -->
   <h2>Active Pilots</h2>

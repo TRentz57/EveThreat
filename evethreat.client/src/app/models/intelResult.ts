@@ -4,6 +4,8 @@ export interface IntelResult {
   activePilots: string[];
   activeTime: string;
   popularShips: string[];
+  allianceName: string;
+  alliedCorps?: string[];
 }
 
 export interface ZKillTranslatedTop {

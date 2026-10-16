@@ -7,6 +7,8 @@
         public List<string> ActivePilots { get; set; }
         public string ActiveTime { get; set; }
         public List<string> PopularShips { get; set; }
+        public string? AllianceName { get; set; }
+        public List<string>? AlliedCorps { get; set; } = new();
 
 
 
