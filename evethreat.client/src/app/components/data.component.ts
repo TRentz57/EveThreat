@@ -17,7 +17,10 @@ export class DataComponent implements OnInit {
 
   ngOnInit() {
     
-    this.loadIntel();
+     this.loadIntel();
+
+ 
+
   
    
   }

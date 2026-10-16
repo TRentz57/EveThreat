@@ -23,7 +23,7 @@ namespace EveThreat.Server.Controllers
         public async Task<IActionResult> Callback(string code, string state)
         {
             await _auth.ProcessCallbackAsync(code, state);
-            return Redirect("https://127.0.0.1:53435/data");
+            return Redirect("/data");
         }
     }
 }
