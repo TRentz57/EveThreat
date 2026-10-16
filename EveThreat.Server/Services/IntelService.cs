@@ -17,6 +17,18 @@ namespace EveThreat.Server.Services
         private readonly Dictionary<long, string> _corpCache = new();
         private readonly Dictionary<long, string> _allianceCache = new();
         private readonly Dictionary<long, string> _shipCache = new();
+        private static readonly HashSet<string> NpcStarterCorps =
+        [
+            "State War Academy",
+            "School of Applied Knowledge",
+            "Science and Trade Institute",
+            "Center for Advanced Studies",
+            "Federal Navy Academy",
+            "Republic University",
+            "University of Caille",
+            "Royal Amarr Institute",
+            "Imperial Academy"
+        ];
 
         public IntelService(IEveAuthService auth, HttpClient http, ZKillCache zKillCache)
         {
@@ -63,6 +75,7 @@ namespace EveThreat.Server.Services
             // NEW: NPC activity still counts,
             // but at reduced weight.
             const double npcWeightMultiplier = 0.25;
+
 
             var corpKillCount = new Dictionary<string, int>();
             var corpDeathCount = new Dictionary<string, int>();
@@ -158,6 +171,11 @@ namespace EveThreat.Server.Services
                 if (corp.Equals("npc", StringComparison.OrdinalIgnoreCase))
                 {
                     score *= npcWeightMultiplier;
+                }
+
+                if (NpcStarterCorps.Contains(corp))
+                {
+                    score *= 0.10;
                 }
 
                 corpScores[corp] = score;
