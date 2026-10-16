@@ -27,7 +27,8 @@ namespace EveThreat.Server.Services
             "Republic University",
             "University of Caille",
             "Royal Amarr Institute",
-            "Imperial Academy"
+            "Imperial Academy",
+            "WiNGSPAN Delivery Services"
         ];
 
         public IntelService(IEveAuthService auth, HttpClient http, ZKillCache zKillCache)
@@ -72,24 +73,46 @@ namespace EveThreat.Server.Services
 
         public async Task<ActiveCorp> GetActiveCorp(List<ZKillTranslatedTop> kills)
         {
-            // NEW: NPC activity still counts,
-            // but at reduced weight.
             const double npcWeightMultiplier = 0.25;
-
 
             var corpKillCount = new Dictionary<string, int>();
             var corpDeathCount = new Dictionary<string, int>();
             var corpDates = new Dictionary<string, HashSet<DateTime>>();
             var corpKills = new Dictionary<string, List<ZKillTranslatedTop>>();
 
-            // Track alliance membership
             var corpAllianceMap = new Dictionary<string, string>();
+
+            // NEW
+            var corpRecencyScore = new Dictionary<string, double>();
+            var corpStructureLosses = new Dictionary<string, double>();
+
+            var structureNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "Astrahus",
+        "Fortizar",
+        "Keepstar",
+        "Raitaru",
+        "Azbel",
+        "Sotiyo",
+        "Athanor",
+        "Tatara"
+    };
 
             foreach (var k in kills)
             {
                 var date = k.KillmailTime.Date;
 
-                // Defender = death / presence
+                var ageDays =
+                    (DateTime.UtcNow - k.KillmailTime).TotalDays;
+
+                // Exponential decay
+                var recencyWeight =
+                    Math.Exp(-ageDays / 45.0);
+
+                // =====================
+                // Defender processing
+                // =====================
+
                 var defCorp = k.Defender.CorpName ?? "npc";
                 var defAlliance = k.Defender.AllianceName ?? "No Alliance";
 
@@ -111,7 +134,25 @@ namespace EveThreat.Server.Services
                 if (!corpAllianceMap.ContainsKey(defCorp))
                     corpAllianceMap[defCorp] = defAlliance;
 
-                // Attackers = kill activity
+                if (!corpRecencyScore.ContainsKey(defCorp))
+                    corpRecencyScore[defCorp] = 0;
+
+                corpRecencyScore[defCorp] += recencyWeight;
+
+                // Structure Loss Tracking
+                if (!string.IsNullOrWhiteSpace(k.Defender.ShipName) &&
+                    structureNames.Contains(k.Defender.ShipName))
+                {
+                    if (!corpStructureLosses.ContainsKey(defCorp))
+                        corpStructureLosses[defCorp] = 0;
+
+                    corpStructureLosses[defCorp] += recencyWeight;
+                }
+
+                // =====================
+                // Attacker processing
+                // =====================
+
                 foreach (var atk in k.Attacker)
                 {
                     var atkCorp = atk.CorpName ?? "npc";
@@ -134,6 +175,11 @@ namespace EveThreat.Server.Services
 
                     if (!corpAllianceMap.ContainsKey(atkCorp))
                         corpAllianceMap[atkCorp] = atkAlliance;
+
+                    if (!corpRecencyScore.ContainsKey(atkCorp))
+                        corpRecencyScore[atkCorp] = 0;
+
+                    corpRecencyScore[atkCorp] += recencyWeight;
                 }
             }
 
@@ -160,14 +206,18 @@ namespace EveThreat.Server.Services
                     .Distinct()
                     .Count();
 
+                double recencyBonus =
+                    corpRecencyScore.TryGetValue(corp, out var recent)
+                        ? recent * 1
+                        : 0;
+
                 double score =
                     (activeDays * 30) +
                     (weeksActive * 15) +
                     (deathsTotal * 2) +
-                    (killsTotal * 1);
+                    (killsTotal * 1) +
+                    recencyBonus;
 
-                // NEW: NPC activity counts,
-                // but much lower than player corps.
                 if (corp.Equals("npc", StringComparison.OrdinalIgnoreCase))
                 {
                     score *= npcWeightMultiplier;
@@ -178,33 +228,36 @@ namespace EveThreat.Server.Services
                     score *= 0.10;
                 }
 
+                // Structure loss penalty
+                if (corpStructureLosses.TryGetValue(corp, out var structureLossWeight))
+                {
+                    score -= structureLossWeight * 50;
+                }
+
                 corpScores[corp] = score;
             }
-
-            // DEBUG: Uncomment while tuning algorithm
 
             foreach (var corp in corpScores
                 .OrderByDescending(x => x.Value)
                 .Take(10))
             {
                 Console.WriteLine(
-                    $"{corp.Key} | Score:{corp.Value}");
+                    $"{corp.Key} | Score:{corp.Value:F1} | Recent:{corpRecencyScore.GetValueOrDefault(corp.Key):F2} | StructureLosses:{corpStructureLosses.GetValueOrDefault(corp.Key):F2}");
             }
-
 
             var topCorp = corpScores
                 .OrderByDescending(x => x.Value)
                 .First();
+            
 
             var corpName = topCorp.Key;
             var scoreValue = topCorp.Value;
 
             string likelihood =
-                scoreValue >= 200 ? "High likelihood" :
-                scoreValue >= 100 ? "Medium likelihood" :
-                "Low likelihood";
+                scoreValue >= 500 ? "High likelihood" :
+                scoreValue >= 300 ? "Medium likelihood" :
+                "Low likelihood Probably Uninhabited/Inactive";
 
-            // Determine winning alliance
             corpAllianceMap.TryGetValue(corpName, out var winningAlliance);
 
             var uniqueKills = corpKills[corpName]
@@ -214,8 +267,6 @@ namespace EveThreat.Server.Services
 
             var alliedCorps = new List<string>();
 
-            // If corp belongs to an alliance,
-            // include alliance member activity.
             if (!string.IsNullOrWhiteSpace(winningAlliance) &&
                 winningAlliance != "No Alliance")
             {
@@ -242,11 +293,11 @@ namespace EveThreat.Server.Services
             }
 
 
+
             return new ActiveCorp
             {
                 CorpName = $"{corpName} ({likelihood})",
 
-                // If no alliance exists, return null
                 AllianceName =
                     string.IsNullOrWhiteSpace(winningAlliance) ||
                     winningAlliance == "No Alliance"
@@ -258,7 +309,6 @@ namespace EveThreat.Server.Services
                 CorpKills = uniqueKills
             };
         }
-
 
 
 

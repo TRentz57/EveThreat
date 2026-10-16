@@ -11,6 +11,6 @@ export class IntelService {
  
 
   getIntel() {
-  return this.api.get<IntelResult>(environment.apiUrl +'/intel');
+  return this.api.get<IntelResult>('intel');
 }
 }

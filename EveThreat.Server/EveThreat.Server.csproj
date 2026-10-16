@@ -18,6 +18,11 @@
     <Content Remove="wwwroot\runtime.5c7d58d2ef55ad0a.js" />
     <Content Remove="wwwroot\styles.ef46db3751d8e999.css" />
   </ItemGroup>
+  <ItemGroup>
+    <None Include="StartProd.bat">
+      <CopyToPublishDirectory>Always</CopyToPublishDirectory>
+    </None>
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.SpaProxy">
